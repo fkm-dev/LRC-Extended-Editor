@@ -118,7 +118,6 @@ public struct KaraokePlayerView: View {
         }
     }
 
-
     // MARK: - Windowing helpers to reduce jolty re-centering
     private func windowSlice(total: Int, span: Int) -> ClosedRange<Int> {
         let start = min(max(0, windowStart), max(0, total - 1))
@@ -174,7 +173,7 @@ public struct KaraokePlayerView: View {
 
         let activeIdx = activeLineIndex() ?? 0
         let span = max(1, linesToShow)
-        // Use a stable window anchored by `windowStart` to avoid constant re-centering
+        // Use a stable window anchored by windowStart to avoid constant re-centering
         let slice = windowSlice(total: usable.count, span: span)
         return Array(usable[slice])
     }
@@ -383,7 +382,6 @@ public struct KaraokePlayerView: View {
         if keyL == "ti" { return fileName }
         return nil
     }
-
 
     private func timeUntilFirstStart() -> TimeInterval? {
         guard let t0 = firstStartTime() else { return nil }

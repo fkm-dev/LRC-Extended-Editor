@@ -75,194 +75,114 @@ final class LRCParser {
         var album: String?
         var by: String?
         var lines: [LyricLine] = []
-        var lastTimedStart: TimeInterval = -1
+        var lastTime: TimeInterval = 0
 
-        let newlineSeparated = text.replacingOccurrences(of: "\r\n", with: "\n")
-                                   .replacingOccurrences(of: "\r", with: "\n")
-                                   .components(separatedBy: "\n")
+        // Vereinheitliche Zeilenenden
+        let linesRaw = text.replacingOccurrences(of: "\r\n", with: "\n")
+                           .replacingOccurrences(of: "\r", with: "\n")
+                           .components(separatedBy: "\n")
 
-        let headerRegex = try! NSRegularExpression(pattern: "^\\[(ti|ar|al|by):([^\\]]+)\\]$", options: [.caseInsensitive])
-        let labelRegex  = try! NSRegularExpression(pattern: "^\\[(.+)\\]$", options: []) // e.g. [Chorus]
-        // Accept leading time either as [mm:ss.xx] or mm:ss.xx
-        let leadingTime = try! NSRegularExpression(pattern: "^(?:\\[(\\d{2}):(\\d{2}\\.?\\d*)\\]|(\\d{2}):(\\d{2}\\.?\\d*))", options: [])
-        let timeThenLabel = try! NSRegularExpression(pattern: "^\\[(\\d{2}):(\\d{2}\\.?\\d*)\\]\\[(.+)\\]$", options: [])
+        let timePattern = #"\[(\d{2}):(\d{2}(?:\.\d{1,2})?)\]"#
+        let timeRegex = try! NSRegularExpression(pattern: timePattern)
+        let wordPattern = #"<(\d{2}):(\d{2}(?:\.\d{1,2})?)>"#
+        let wordRegex = try! NSRegularExpression(pattern: wordPattern)
 
         func parseTime(_ mm: String, _ ss: String) -> TimeInterval {
-            let minutes = Double(mm) ?? 0
-            let seconds = Double(ss.replacingOccurrences(of: ",", with: ".")) ?? 0
-            return minutes * 60 + seconds
+            let m = Double(mm) ?? 0
+            let s = Double(ss.replacingOccurrences(of: ",", with: ".")) ?? 0
+            return m * 60 + s
         }
 
-        for rawLine in newlineSeparated {
+        for rawLine in linesRaw {
             let line = rawLine.trimmingCharacters(in: .whitespaces)
             if line.isEmpty { continue }
 
-            // Headers like [ti:...]
-            if let m = headerRegex.firstMatch(in: line, options: [], range: NSRange(location: 0, length: line.utf16.count)) {
-                let keyRange = Range(m.range(at: 1), in: line)!
-                let valRange = Range(m.range(at: 2), in: line)!
-                let key = String(line[keyRange]).lowercased()
-                let val = String(line[valRange]).trimmingCharacters(in: .whitespaces)
-                switch key { case "ti": title = val
-                             case "ar": artist = val
-                             case "al": album = val
-                             case "by": by = val
-                             default: break }
+            // Kopfzeilen wie [ti:], [ar:], [al:], [by:]
+            if line.hasPrefix("[ti:") || line.hasPrefix("[ar:") ||
+               line.hasPrefix("[al:") || line.hasPrefix("[by:]") {
+                let key = line.dropFirst(1).prefix(2).lowercased()
+                let value = line.replacingOccurrences(of: "[\(key):", with: "")
+                                .replacingOccurrences(of: "]", with: "")
+                                .trimmingCharacters(in: .whitespaces)
+                switch key {
+                case "ti": title = value
+                case "ar": artist = value
+                case "al": album = value
+                case "by": by = value
+                default: break
+                }
                 continue
             }
 
-            // Exact pattern: [mm:ss.xx][Label]
-            if let m = timeThenLabel.firstMatch(in: line, options: [], range: NSRange(location: 0, length: line.utf16.count)) {
-                let mm = (line as NSString).substring(with: m.range(at: 1))
-                let ss = (line as NSString).substring(with: m.range(at: 2))
-                let labelText = (line as NSString).substring(with: m.range(at: 3)).trimmingCharacters(in: .whitespaces)
-                let ts = parseTime(mm, ss)
-                lastTimedStart = ts
-                lines.append(LyricLine(startTime: ts, tokens: [], label: labelText))
-                continue
-            }
+            // Finde Zeilenzeit (z. B. [01:15.34])
+            guard let timeMatch = timeRegex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)) else { continue }
+            let mm = (line as NSString).substring(with: timeMatch.range(at: 1))
+            let ss = (line as NSString).substring(with: timeMatch.range(at: 2))
+            let lineTime = parseTime(mm, ss)
+            lastTime = lineTime
 
-            // Section labels like [Chorus], [Pre-Chorus]
-            if let m = labelRegex.firstMatch(in: line, options: [], range: NSRange(location: 0, length: line.utf16.count)),
-               headerRegex.firstMatch(in: line, options: [], range: NSRange(location: 0, length: line.utf16.count)) == nil {
-                // Keep as a line with label only, anchor to last seen timed start
-                let labelTextRange = Range(m.range(at: 1), in: line)!
-                let labelText = String(line[labelTextRange])
-                lines.append(LyricLine(startTime: lastTimedStart, tokens: [], label: labelText))
-                continue
-            }
+            // Entferne Zeilenzeit aus Text
+            let afterTimeIndex = Range(timeMatch.range, in: line)!.upperBound
+            let content = line[afterTimeIndex...].trimmingCharacters(in: .whitespaces)
 
-            // Main lyric line with [mm:ss.xx] then tokens with <mm:ss.xx>word
-            var startTime: TimeInterval = 0
-            var tokens: [LyricToken] = []
-            var cursor = line
-
-            if let m = leadingTime.firstMatch(in: line, options: [], range: NSRange(location: 0, length: line.utf16.count)) {
-                // Captures: (1,2) if bracketed; (3,4) if plain
-                let hasBracketed = m.range(at: 1).location != NSNotFound
-                let mm = hasBracketed ? (line as NSString).substring(with: m.range(at: 1)) : (line as NSString).substring(with: m.range(at: 3))
-                let ss = hasBracketed ? (line as NSString).substring(with: m.range(at: 2)) : (line as NSString).substring(with: m.range(at: 4))
-                startTime = parseTime(mm, ss)
-                lastTimedStart = startTime
-                cursor = String(line[Range(m.range, in: line)!.upperBound...]).trimmingCharacters(in: .whitespaces)
-
-                // If the remaining cursor is exactly a label like [Chorus] / [Outro], keep it as a label line at this timestamp
-                let curNS = cursor as NSString
-                let fullRange = NSRange(location: 0, length: curNS.length)
-                if fullRange.length > 0 {
-                    // 1) Exact bracketed label
-                    if let lm = labelRegex.firstMatch(in: cursor.trimmingCharacters(in: .whitespaces), options: [], range: NSRange(location: 0, length: (cursor.trimmingCharacters(in: .whitespaces) as NSString).length)) {
-                        let tr = cursor.trimmingCharacters(in: .whitespaces)
-                        let labelTextRange = Range(lm.range(at: 1), in: tr)!
-                        let labelText = String(tr[labelTextRange])
-                        lines.append(LyricLine(startTime: startTime, tokens: [], label: labelText))
-                        continue
+            // Enthält Wort-Timings?
+            let wordMatches = wordRegex.matches(in: String(content), range: NSRange(content.startIndex..., in: content))
+            if wordMatches.isEmpty {
+                // Ganze Zeile mit einem Token
+                let token = LyricToken(time: lineTime, text: content)
+                lines.append(LyricLine(startTime: lineTime, tokens: [token], label: nil))
+            } else {
+                var tokens: [LyricToken] = []
+                var lastEnd = content.startIndex
+                for match in wordMatches {
+                    let mm = (content as NSString).substring(with: match.range(at: 1))
+                    let ss = (content as NSString).substring(with: match.range(at: 2))
+                    let tokTime = parseTime(mm, ss)
+                    let end = content.index(content.startIndex, offsetBy: match.range.location + match.range.length)
+                    let nextStart = end < content.endIndex ? end : content.endIndex
+                    let wordText = content[nextStart...].split(separator: "<", maxSplits: 1).first ?? ""
+                    let textPart = wordText.trimmingCharacters(in: .whitespaces)
+                    if !textPart.isEmpty {
+                        tokens.append(LyricToken(time: tokTime, text: textPart))
                     }
-                    // 2) Fallback: bracketed label somewhere in the remainder (e.g., stray characters around)
-                    if let any = labelRegex.firstMatch(in: cursor, options: [], range: fullRange) {
-                        let labelTextRange = Range(any.range(at: 1), in: cursor)!
-                        let labelText = String(cursor[labelTextRange]).trimmingCharacters(in: .whitespaces)
-                        if !labelText.isEmpty {
-                            lines.append(LyricLine(startTime: startTime, tokens: [], label: labelText))
-                            continue
-                        }
-                    }
-                    // 3) Plain label (no '<' tokens present)
-                    let plain = cursor.trimmingCharacters(in: .whitespaces)
-                    if !plain.contains("<"), plain.range(of: "^[\\p{L}0-9 ()/\\-]+$", options: .regularExpression) != nil, plain.count <= 48 {
-                        lines.append(LyricLine(startTime: startTime, tokens: [], label: plain))
-                        continue
-                    }
+                    lastEnd = nextStart
                 }
-            }
-
-            // Iterate through tokens: <time>word (possibly punctuation/ellipsis)
-            let scanner = cursor
-            var idx = scanner.startIndex
-            while idx < scanner.endIndex {
-                guard let ltRange = scanner.range(of: "<", range: idx..<scanner.endIndex),
-                      let gtRange = scanner.range(of: ">", range: ltRange.upperBound..<scanner.endIndex) else {
-                    break
-                }
-                let timeStamp = String(scanner[ltRange.upperBound..<gtRange.lowerBound]).trimmingCharacters(in: .whitespaces)
-                let comps = timeStamp.split(separator: ":")
-                if comps.count == 2 {
-                    let t = parseTime(String(comps[0]), String(comps[1]))
-                    // token text runs until next '<' or end
-                    let nextLT = scanner[gtRange.upperBound...].firstIndex(of: "<") ?? scanner.endIndex
-                    var tokenText = String(scanner[gtRange.upperBound..<nextLT])
-                    tokenText = tokenText.trimmingCharacters(in: .whitespaces)
-                    if !tokenText.isEmpty {
-                        tokens.append(LyricToken(time: t, text: tokenText))
-                    }
-                    idx = nextLT
-                } else {
-                    idx = gtRange.upperBound
-                }
-            }
-
-            // Wenn keine Wort-Zeitmarken vorhanden, aber ein Zeilenzeitcode existiert
-            if tokens.isEmpty, startTime > 0, !cursor.isEmpty {
-                let plainText = cursor.trimmingCharacters(in: .whitespaces)
-                if !plainText.isEmpty {
-                    let token = LyricToken(time: startTime, text: plainText)
-                    lines.append(LyricLine(startTime: startTime, tokens: [token], label: nil))
-                    continue
-                }
-            }
-
-            if !tokens.isEmpty || startTime > 0 {
-                lines.append(LyricLine(startTime: startTime, tokens: tokens, label: nil))
+                lines.append(LyricLine(startTime: lineTime, tokens: tokens, label: nil))
             }
         }
 
         return LyricsDocument(title: title, artist: artist, album: album, by: by, lines: lines)
     }
 
-    /// Normalize token timings within each line so they are non-decreasing and do not exceed the line end.
-    /// Line end is defined as the start of the next line (if any), otherwise last token + 0.5s.
-    /// A minimal gap between tokens can be enforced with `minGap`.
     static func reflow(_ doc: LyricsDocument, minGap: TimeInterval = 0.02) -> LyricsDocument {
         guard !doc.lines.isEmpty else { return doc }
         var newLines: [LyricLine] = []
-        let lines = doc.lines
 
-        for i in 0..<lines.count {
-            let line = lines[i]
+        for i in 0..<doc.lines.count {
+            let line = doc.lines[i]
             guard !line.tokens.isEmpty else { newLines.append(line); continue }
 
-            let startT = line.tokens.first?.time ?? line.startTime
-            // Determine line end
-            let nextStart: TimeInterval? = {
-                guard i + 1 < lines.count else { return nil }
-                let n = lines[i+1]
-                if !n.tokens.isEmpty { return n.tokens.first?.time ?? n.startTime }
-                return n.startTime > 0 ? n.startTime : nil
-            }()
-            let fallbackEnd = (line.tokens.last?.time ?? startT) + 0.5
-            let endT = max(startT + minGap, (nextStart ?? fallbackEnd))
-
-            // Enforce non-decreasing times with minGap
+            let start = line.tokens.first!.time
+            let nextStart: TimeInterval? = i + 1 < doc.lines.count ? doc.lines[i + 1].tokens.first?.time : nil
+            let end = nextStart ?? (line.tokens.last!.time + 0.5)
             var toks = line.tokens
+
             for j in 1..<toks.count {
-                let prev = toks[j-1].time
-                if toks[j].time < prev + minGap {
-                    toks[j] = LyricToken(id: toks[j].id, time: prev + minGap, text: toks[j].text)
+                if toks[j].time <= toks[j-1].time {
+                    toks[j] = LyricToken(id: toks[j].id, time: toks[j-1].time + minGap, text: toks[j].text)
                 }
             }
 
-            // Compress into [first..endT] if last token spills beyond end
-            if let first = toks.first?.time, let last = toks.last?.time, last > endT {
-                let span = max(minGap, last - first)
-                let target = max(minGap, endT - first)
-                let scale = target / span
+            if toks.last!.time > end {
+                let first = toks.first!.time
+                let scale = (end - first) / (toks.last!.time - first)
                 toks = toks.map { tok in
-                    let dt = tok.time - first
-                    return LyricToken(id: tok.id, time: first + dt * scale, text: tok.text)
+                    let newT = first + (tok.time - first) * scale
+                    return LyricToken(id: tok.id, time: newT, text: tok.text)
                 }
             }
 
-            newLines.append(LyricLine(startTime: line.startTime, tokens: toks, label: line.label))
+            newLines.append(LyricLine(startTime: start, tokens: toks, label: line.label))
         }
 
         return LyricsDocument(title: doc.title, artist: doc.artist, album: doc.album, by: doc.by, lines: newLines)
