@@ -593,3 +593,4 @@ final class VideoCreator {
         return pxBuffer
     }
 }
+}
