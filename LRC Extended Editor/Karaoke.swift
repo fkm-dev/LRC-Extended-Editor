@@ -108,7 +108,7 @@ public struct KaraokePlayerView: View {
                         let total = (lyrics?.lines ?? []).filter { ($0.tokens.first?.time ?? $0.startTime) >= 0 || !$0.tokens.isEmpty }.count
                         adjustWindowStart(active: newVal, total: total, span: linesToShow)
                     }
-                    .animation(.easeOut(duration: 0.12), value: windowStart)
+                    .animation(.easeInOut(duration: 0.4), value: windowStart)
                     Spacer(minLength: 0)
                 }
                 .frame(maxHeight: .infinity)
@@ -131,15 +131,19 @@ public struct KaraokePlayerView: View {
         let start = min(max(0, windowStart), max(0, total - spanClamped))
         let end = min(total - 1, start + spanClamped - 1)
 
-        if active < start {
-            // Jump one full window back
-            windowStart = max(0, start - spanClamped)
-        } else if active > end {
-            // Jump one full window forward
-            windowStart = min(max(0, total - spanClamped), start + spanClamped)
-        } else {
-            // Active is within the current window: do nothing (no scroll)
-            windowStart = start
+        // Scroll erst, wenn die aktive Zeile wirklich den unteren Rand erreicht (nicht zwei vorher)
+        var targetStart = windowStart
+
+        if active > end {
+            targetStart = min(max(0, total - spanClamped), active - (spanClamped / 2))
+        } else if active < start {
+            targetStart = max(0, active - (spanClamped / 2))
+        }
+
+        if targetStart != windowStart {
+            withAnimation(.easeInOut(duration: 0.4)) {
+                windowStart = targetStart
+            }
         }
     }
 
